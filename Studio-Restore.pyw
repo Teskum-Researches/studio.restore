@@ -1,94 +1,342 @@
 import requests
 import time
 import re
-import threading
 from http.cookies import SimpleCookie
 from datetime import datetime, timedelta, UTC
 import sys
-from PyQt6.QtWidgets import QApplication, QWidget, QPushButton, QVBoxLayout, QLineEdit, QListWidget, QLabel, QProgressBar
-from PyQt6.QtCore import QThread, pyqtSignal, QTimer
+from PyQt6.QtWidgets import QApplication, QWidget, QPushButton, QVBoxLayout, QLineEdit, QListWidget, QLabel, QProgressBar, QMessageBox
+from PyQt6.QtCore import QThread, pyqtSignal, QObject
 
-class WorkerThread(QThread):
+# Функции для взаимодействия с Scratch API
+# (Эти функции я оставил без изменений)
+def login(username, password):
+    session = requests.Session()
+    session.get("https://scratch.mit.edu/csrf_token/")
+    csrf_token = session.cookies.get('scratchcsrftoken')
+    headers = {
+        "referer": "https://scratch.mit.edu",
+        "X-Requested-With": "XMLHttpRequest",
+        "X-CSRFToken": csrf_token,
+        "Content-Type": "application/json",
+        "Accept-Language": "ru-RU,ru;q=0.9"
+    }
+    body = {
+        "username": username,
+        "password": password,
+        "useMessages": "true"
+    }
+    respo = session.post(
+        "https://scratch.mit.edu/accounts/login/",
+        headers=headers,
+        json=body
+    )
+    if respo.status_code == 200:
+        cookies = respo.cookies
+        session_cookie = cookies.get('scratchsessionsid')
+        if not session_cookie:
+            return {"success": False, "msg": "Не удалось получить cookie сессии."}
+
+        cookie_string = f'scratchsessionsid="{session_cookie.value}"; scratchcsrftoken={csrf_token}'
+        head = {
+            "Cookie": cookie_string,
+            "referer": "https://scratch.mit.edu/",
+            "X-Requested-With": "XMLHttpRequest",
+            "X-CSRFToken": csrf_token,
+            "Content-Type": "application/json",
+            "Accept-Language": "ru-RU,ru;q=0.9",
+            "Origin": "https://scratch.mit.edu",
+            "Accept-Encoding": "gzip, deflate, br, zstd",
+            "Accept": "*/*",
+        }
+        
+        resp = requests.get("https://scratch.mit.edu/session/", headers=head)
+        if resp.status_code == 200:
+            lol = resp.json()
+            return {"success": True, "cookie": head, "token": lol["user"]["token"], "username": lol["user"]["username"], "isbanned": lol["user"]["banned"]}
+        else:
+            return {"success": False, "msg": "Не удалось получить информацию о сессии."}
+    else:
+        try:
+            data = respo.json()
+            return {"success": False, "msg": data[0].get("msg")}
+        except (requests.exceptions.JSONDecodeError, IndexError):
+            return {"success": False, "msg": "Ошибка входа, проверьте имя пользователя и пароль."}
+
+def addproject(token, studio, project):
+    r = requests.post(f"https://api.scratch.mit.edu/studios/{str(studio)}/project/{str(project)}/", headers={"X-Token": token})
+    return r.status_code
+
+def invite(studio, user, cookie):
+    resp = requests.put(f"https://scratch.mit.edu/site-api/users/curators-in/{str(studio)}/invite_curator/?usernames={user}", headers=cookie)
+    if resp.status_code == 200:
+        try:
+            j = resp.json()
+            if j["status"] == "success":
+                return {"success": True, "data": f"Пригласили {user}"}
+            elif j["status"] == "error":
+                return {"success": True, "data": f"{user} уже есть в приглашённых/кураторах/менеджерах"}
+            else:
+                return {"success": True, "data": f"Произошла неизвестная ошибка при приглашении {user}"}
+        except requests.exceptions.JSONDecodeError:
+            return {"success": False, "status": resp.status_code, "msg": "Неверный ответ от API."}
+    else:
+        return {"success": False, "status": resp.status_code}
+    
+def getactivity(studio, offset):
+    req = requests.get(f"https://api.scratch.mit.edu/studios/{str(studio)}/activity?limit=40&offset={str(offset)}")
+    if req.status_code == 200:
+        return {"success": True, "data": req.json()}
+    else:
+        return {"success": False, "status": req.status_code}
+    
+def openprojects(cookie, studio):
+    resp = requests.put(f"https://scratch.mit.edu/site-api/galleries/{str(studio)}/mark/open/", headers=cookie)
+    return resp.status_code == 200
+
+def removeproject(token, studio, project):
+    r = requests.delete(f"https://api.scratch.mit.edu/studios/{str(studio)}/project/{str(project)}/", headers={"X-Token": token})
+    return r.status_code
+
+def removeuser(studio, user, cookie):
+    resp = requests.put(f"https://scratch.mit.edu/site-api/users/curators-in/{str(studio)}/remove/?usernames={user}", headers=cookie)
+    return resp.status_code
+
+# Новый класс-обработчик, который будет работать в отдельном потоке
+class Worker(QObject):
+    log_message = pyqtSignal(str)
     progress_updated = pyqtSignal(int)
+    task_finished = pyqtSignal()
+
+    def __init__(self, username, password, studio_id, destroyer_name):
+        super().__init__()
+        self.username = username
+        self.password = password
+        self.studio_id = studio_id
+        self.destroyer_name = destroyer_name
+        self.is_running = True
 
     def run(self):
-        for i in range(101):
-            time.sleep(0.05)  # Имитация работы
-            self.progress_updated.emit(i)
+        self.log_message.emit("Собираем информацию о действиях уничтожителя...")
+        off = 0
+        loop = True
+        all_acts = []
+        c = 0
+        while loop and self.is_running:
+            a = getactivity(self.studio_id, off)
+            if not self.is_running: break
+            if a["success"]:
+                hasd = False
+                for act in a["data"]:
+                    if act["actor_username"].lower() == self.destroyer_name.lower():
+                        hasd = True
+                if hasd:
+                    all_acts += a["data"]
+                    c = 0
+                else:
+                    c += 1
+                    if c >= 3:
+                        loop = False
+                off += 40
+            elif a["status"] == 404:
+                self.log_message.emit("Студия удалена! Восстановление невозможно!")
+                self.task_finished.emit()
+                return 0
+            elif a["status"] >= 500:
+                self.log_message.emit(f"Произошла ошибка сервера: {a["status"]}. Повторная попытка через 30 секунд...")
+                time.sleep(30)
+            else:
+                self.log_message.emit(f"Произошла неожиданная ошибка: {a["status"]}")
+                self.task_finished.emit()
+                return 0
 
+        if not self.is_running:
+            self.task_finished.emit()
+            return
+
+        total_acts = len(all_acts)
+        if total_acts == 0:
+            self.log_message.emit("Не найдено действий уничтожителя. Восстановление не требуется.")
+            self.task_finished.emit()
+            return
+
+        percent_per_act = 100 / total_acts
+        current_progress = 0
+        self.log_message.emit("Входим в аккаунт...")
+        account = login(self.username, self.password)
+        if not self.is_running:
+            self.task_finished.emit()
+            return
+            
+        if account["success"]:
+            if account["isbanned"]:
+                self.log_message.emit("Аккаунт забанен!")
+                self.task_finished.emit()
+                return 0
+        else:
+            self.log_message.emit(f"Ошибка входа: {account['msg']}")
+            self.task_finished.emit()
+            return 0
+        
+        self.log_message.emit("Начинаем восстановление!")
+        
+        for i, act in enumerate(all_acts):
+            if not self.is_running: break
+            if act["actor_username"].lower() == self.destroyer_name.lower():
+                if act["type"] == "updatestudio":
+                    if openprojects(account["cookie"], self.studio_id):
+                        self.log_message.emit('Включено "Любой может добавлять проекты"')
+                    else:
+                        self.log_message.emit('Не удалось включить "любой может добавлять проекты"')
+                elif act["type"] == "removeprojectstudio":
+                    l = True
+                    while l:
+                        l = False
+                        p = addproject(account["token"], self.studio_id, act["project_id"])
+                        if p == 200:
+                            self.log_message.emit(f'Добавлен проект "{act["project_title"]}"')
+                        elif p == 429:
+                            self.log_message.emit("Аккаунт получил временное ограничение на добавление проектов. Повторная попытка через 1 минуту...")
+                            l = True
+                            time.sleep(60)
+                        elif p == 403:
+                            self.log_message.emit(f'Проект "{act["project_title"]}" не в общем доступе')
+                        else:
+                            self.log_message.emit(f'Произошла ошибка {p} при добавлении проекта "{act["project_title"]}"')
+                elif act["type"] == "addprojecttostudio":
+                    l = True
+                    while l:
+                        l = False
+                        p = removeproject(account["token"], self.studio_id, act["project_id"])
+                        if p == 200 or p == 204:
+                            self.log_message.emit(f'Удалён проект "{act["project_title"]}"')
+                        elif p == 429:
+                            self.log_message.emit("Слишком много запросов. Следующая попытка будет через 1 минуту...")
+                            l = True
+                            time.sleep(60)
+                        elif p == 403:
+                            self.log_message.emit(f'Проект "{act["project_title"]}" не в общем доступе')
+                        else:
+                            self.log_message.emit(f'Произошла ошибка {p} при удалении проекта "{act["project_title"]}"')
+                elif act["type"] == "removecuratorstudio":
+                    if act["username"].lower() == self.destroyer_name.lower():
+                        self.log_message.emit(f"{self.destroyer_name} не приглашаем, он уничтожил студию")
+                    else:
+                        iii = invite(self.studio_id, act["username"], account["cookie"])
+                        if iii["success"]:
+                            self.log_message.emit(iii["data"])
+                        else:
+                            self.log_message.emit(f"Ошибка {iii.get('status')} при приглашении {act['username']}")
+                elif act["type"] == "becomeownerstudio":
+                    rem = removeuser(self.studio_id, act["recipient_username"], account["cookie"])
+                    if rem == 200:
+                        self.log_message.emit(f'Успешно удалён возможный твинк "{act["recipient_username"]}"')
+                    else:
+                        self.log_message.emit(f"Произошла ошибка {rem} при удалении возможного твинка с именем {act["recipient_username"]}")
+            
+            current_progress += percent_per_act
+            self.progress_updated.emit(int(current_progress))
+
+        if self.is_running:
+            self.log_message.emit("Восстановление завершено!")
+        else:
+            self.log_message.emit("Восстановление отменено.")
+        self.task_finished.emit()
+
+    def stop(self):
+        self.is_running = False
 
 class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle('Studio.Restore()')
-        self.setGeometry(100, 100, 600, 480) # (x, y, ширина, высота)
+        self.setGeometry(100, 100, 600, 480)
         self.setFixedSize(600, 480)
-        self.username = QLineEdit()
-        self.username.setPlaceholderText('Ник')
 
-        self.password = QLineEdit()
-        self.password.setPlaceholderText('Пароль')
-        self.password.setEchoMode(QLineEdit.EchoMode.Password)
+        self.username_input = QLineEdit()
+        self.username_input.setPlaceholderText('Ник')
 
-        self.destroyer = QLineEdit()
-        self.destroyer.setPlaceholderText('Ник уничтожителя')
+        self.password_input = QLineEdit()
+        self.password_input.setPlaceholderText('Пароль')
+        self.password_input.setEchoMode(QLineEdit.EchoMode.Password)
 
-        self.studio_line = QLineEdit()
-        self.studio_line.setPlaceholderText('ID или ссылка уничтоженной студии')
+        self.destroyer_input = QLineEdit()
+        self.destroyer_input.setPlaceholderText('Ник уничтожителя')
 
+        self.studio_input = QLineEdit()
+        self.studio_input.setPlaceholderText('ID или ссылка уничтоженной студии')
 
         self.logs = QListWidget()
-        self.copyright = QLabel()
-        self.copyright.setText("© 2025 Teskum Researches")
+        self.copyright_label = QLabel("© 2025 Teskum Researches")
 
         self.restore_btn = QPushButton('Восстановить')
-        
         self.progress_bar = QProgressBar()
         self.progress_bar.setValue(0)
+        
+        self.worker_thread = None
+        self.worker = None
 
         layout = QVBoxLayout()
-
-        layout.addWidget(self.username)
-        layout.addWidget(self.password)
-        layout.addWidget(self.destroyer)
-        layout.addWidget(self.studio_line)
+        layout.addWidget(self.username_input)
+        layout.addWidget(self.password_input)
+        layout.addWidget(self.destroyer_input)
+        layout.addWidget(self.studio_input)
         layout.addWidget(self.restore_btn)
         layout.addWidget(self.logs)
-        layout.addWidget(self.copyright)
+        layout.addWidget(self.copyright_label)
         layout.addWidget(self.progress_bar)
 
-
         self.setLayout(layout)
+        self.restore_btn.clicked.connect(self.start_restore)
 
-        self.restore_btn.clicked.connect(self.restore)
-
+    def start_restore(self):
+        self.progress_bar.setValue(0)
+        self.logs.clear()
         
-    def log(self, message):
-        window.logs.addItem(message)
-        window.logs.scrollToBottom()
+        username = self.username_input.text().strip()
+        password = self.password_input.text()
+        destroyer_name = self.destroyer_input.text().strip()
+        studio_text = self.studio_input.text().strip()
 
-    def restore(self):
-        self.progress_bar.setValue(0)  # Сбрасываем прогресс
-        self.restore_btn.setEnabled(False)  # Делаем кнопку неактивной на время процесса
-        self.worker = WorkerThread()
-        self.worker.progress_updated.connect(self.update_progress)
-        self.worker.finished.connect(self.task_finished)
-        self.worker.start()
+        if not all([username, password, destroyer_name, studio_text]):
+            self.log("Пожалуйста, заполните все поля.")
+            return
 
-    def update_progress(self, value):
-        self.progress_bar.setValue(value)
+        try:
+            studio_id_match = re.search(r'\d+', studio_text)
+            if not studio_id_match:
+                self.log("Неверный формат ID студии. Укажите число.")
+                return
+            studio_id = int(studio_id_match.group(0))
+        except (ValueError, IndexError):
+            self.log("Неверный формат ID студии. Укажите число.")
+            return
+            
+        self.restore_btn.setEnabled(False)
+        self.worker_thread = QThread()
+        self.worker = Worker(username, password, studio_id, destroyer_name)
+        self.worker.moveToThread(self.worker_thread)
+        
+        self.worker_thread.started.connect(self.worker.run)
+        self.worker.log_message.connect(self.log)
+        self.worker.progress_updated.connect(self.progress_bar.setValue)
+        self.worker.task_finished.connect(self.task_finished)
+        self.worker.task_finished.connect(self.worker_thread.quit)
+        self.worker.task_finished.connect(self.worker.deleteLater)
+        self.worker_thread.finished.connect(self.worker_thread.deleteLater)
+        
+        self.worker_thread.start()
 
     def task_finished(self):
-        self.restore_btn.setEnabled(True)  # Возвращаем кнопку в активное состояние
+        self.restore_btn.setEnabled(True)
         self.progress_bar.setValue(100)
-        
-        # Опционально: можно показать сообщение, что задача завершена
-        self.log("Ура, восстонавили!")
+        self.log("Восстановление завершено!")
 
+    def log(self, message):
+        self.logs.addItem(message)
+        self.logs.scrollToBottom()
 
-        
 if __name__ == '__main__':
     app = QApplication(sys.argv)
     window = MainWindow()
-    window.show() # Показываем окно
+    window.show()
     sys.exit(app.exec())
