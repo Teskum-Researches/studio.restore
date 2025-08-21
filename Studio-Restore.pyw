@@ -4,11 +4,12 @@ import re
 from http.cookies import SimpleCookie
 from datetime import datetime, timedelta, UTC
 import sys
-from PyQt6.QtWidgets import QApplication, QWidget, QPushButton, QVBoxLayout, QLineEdit, QListWidget, QLabel, QProgressBar, QMessageBox
+from PyQt6.QtWidgets import (QApplication, QWidget, QPushButton, QVBoxLayout, 
+                            QLineEdit, QListWidget, QLabel, QProgressBar, 
+                            QMessageBox, QHBoxLayout)
 from PyQt6.QtCore import QThread, pyqtSignal, QObject
 
 # Функции для взаимодействия с Scratch API
-# (Эти функции я оставил без изменений)
 def login(username, password):
     session = requests.Session()
     session.get("https://scratch.mit.edu/csrf_token/")
@@ -101,7 +102,6 @@ def removeuser(studio, user, cookie):
     resp = requests.put(f"https://scratch.mit.edu/site-api/users/curators-in/{str(studio)}/remove/?usernames={user}", headers=cookie)
     return resp.status_code
 
-# Новый класс-обработчик, который будет работать в отдельном потоке
 class Worker(QObject):
     log_message = pyqtSignal(str)
     progress_updated = pyqtSignal(int)
@@ -123,7 +123,8 @@ class Worker(QObject):
         c = 0
         while loop and self.is_running:
             a = getactivity(self.studio_id, off)
-            if not self.is_running: break
+            if not self.is_running: 
+                break
             if a["success"]:
                 hasd = False
                 for act in a["data"]:
@@ -137,17 +138,17 @@ class Worker(QObject):
                     if c >= 3:
                         loop = False
                 off += 40
-            elif a["status"] == 404:
+            elif a.get("status") == 404:
                 self.log_message.emit("Студия удалена! Восстановление невозможно!")
                 self.task_finished.emit()
-                return 0
-            elif a["status"] >= 500:
-                self.log_message.emit(f"Произошла ошибка сервера: {a["status"]}. Повторная попытка через 30 секунд...")
+                return
+            elif a.get("status", 0) >= 500:
+                self.log_message.emit(f"Произошла ошибка сервера: {a.get('status')}. Повторная попытка через 30 секунд...")
                 time.sleep(30)
             else:
-                self.log_message.emit(f"Произошла неожиданная ошибка: {a["status"]}")
+                self.log_message.emit(f"Произошла неожиданная ошибка: {a.get('status')}")
                 self.task_finished.emit()
-                return 0
+                return
 
         if not self.is_running:
             self.task_finished.emit()
@@ -171,16 +172,17 @@ class Worker(QObject):
             if account["isbanned"]:
                 self.log_message.emit("Аккаунт забанен!")
                 self.task_finished.emit()
-                return 0
+                return
         else:
             self.log_message.emit(f"Ошибка входа: {account['msg']}")
             self.task_finished.emit()
-            return 0
+            return
         
         self.log_message.emit("Начинаем восстановление!")
         
         for i, act in enumerate(all_acts):
-            if not self.is_running: break
+            if not self.is_running: 
+                break
             if act["actor_username"].lower() == self.destroyer_name.lower():
                 if act["type"] == "updatestudio":
                     if openprojects(account["cookie"], self.studio_id):
@@ -231,7 +233,7 @@ class Worker(QObject):
                     if rem == 200:
                         self.log_message.emit(f'Успешно удалён возможный твинк "{act["recipient_username"]}"')
                     else:
-                        self.log_message.emit(f"Произошла ошибка {rem} при удалении возможного твинка с именем {act["recipient_username"]}")
+                        self.log_message.emit(f"Произошла ошибка {rem} при удалении возможного твинка с именем {act['recipient_username']}")
             
             current_progress += percent_per_act
             self.progress_updated.emit(int(current_progress))
@@ -269,24 +271,33 @@ class MainWindow(QWidget):
         self.copyright_label = QLabel("© 2025 Teskum Researches")
 
         self.restore_btn = QPushButton('Восстановить')
+        self.cancel_btn = QPushButton('Отмена')
+        self.cancel_btn.setEnabled(False)
+        
         self.progress_bar = QProgressBar()
         self.progress_bar.setValue(0)
         
         self.worker_thread = None
         self.worker = None
 
+        # Layout для кнопок
+        button_layout = QHBoxLayout()
+        button_layout.addWidget(self.restore_btn)
+        button_layout.addWidget(self.cancel_btn)
+
         layout = QVBoxLayout()
         layout.addWidget(self.username_input)
         layout.addWidget(self.password_input)
         layout.addWidget(self.destroyer_input)
         layout.addWidget(self.studio_input)
-        layout.addWidget(self.restore_btn)
+        layout.addLayout(button_layout)
         layout.addWidget(self.logs)
         layout.addWidget(self.copyright_label)
         layout.addWidget(self.progress_bar)
 
         self.setLayout(layout)
         self.restore_btn.clicked.connect(self.start_restore)
+        self.cancel_btn.clicked.connect(self.cancel_restore)
 
     def start_restore(self):
         self.progress_bar.setValue(0)
@@ -312,6 +323,8 @@ class MainWindow(QWidget):
             return
             
         self.restore_btn.setEnabled(False)
+        self.cancel_btn.setEnabled(True)
+        
         self.worker_thread = QThread()
         self.worker = Worker(username, password, studio_id, destroyer_name)
         self.worker.moveToThread(self.worker_thread)
@@ -326,10 +339,16 @@ class MainWindow(QWidget):
         
         self.worker_thread.start()
 
+    def cancel_restore(self):
+        if self.worker:
+            self.worker.stop()
+        self.restore_btn.setEnabled(True)
+        self.cancel_btn.setEnabled(False)
+
     def task_finished(self):
         self.restore_btn.setEnabled(True)
+        self.cancel_btn.setEnabled(False)
         self.progress_bar.setValue(100)
-        self.log("Восстановление завершено!")
 
     def log(self, message):
         self.logs.addItem(message)
