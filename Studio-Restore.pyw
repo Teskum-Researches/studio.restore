@@ -292,8 +292,9 @@ class MainWindow(QWidget):
         layout.addWidget(self.studio_input)
         layout.addLayout(button_layout)
         layout.addWidget(self.logs)
-        layout.addWidget(self.copyright_label)
         layout.addWidget(self.progress_bar)
+        layout.addWidget(self.copyright_label)
+        
 
         self.setLayout(layout)
         self.restore_btn.clicked.connect(self.start_restore)
