@@ -1,13 +1,6 @@
 import requests
 import time
 import re
-from http.cookies import SimpleCookie
-from datetime import datetime, timedelta, UTC
-import sys
-from PyQt6.QtWidgets import (QApplication, QWidget, QPushButton, QVBoxLayout, 
-                            QLineEdit, QListWidget, QLabel, QProgressBar, 
-                            QMessageBox, QHBoxLayout)
-from PyQt6.QtCore import QThread, pyqtSignal, QObject
 
 # Функции для взаимодействия с Scratch API
 def login(username, password):
