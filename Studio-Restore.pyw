@@ -115,36 +115,36 @@ class Worker(QObject):
 
     def run(self):
         self.log_message.emit("Собираем информацию о действиях уничтожителя...")
-        off = 0
         loop = True
         all_acts = []
+        off = 0
         c = 0
         while loop and self.is_running:
-            a = getactivity(self.studio_id, off)
+            activity = getactivity(self.studio_id, off)
             if not self.is_running: 
                 break
-            if a["success"]:
+            if activity["success"]:
                 hasd = False
-                for act in a["data"]:
+                for act in activity["data"]:
                     if act["actor_username"].lower() == self.destroyer_name.lower():
                         hasd = True
                 if hasd:
-                    all_acts += a["data"]
+                    all_acts += activity["data"]
                     c = 0
                 else:
                     c += 1
                     if c >= 3:
                         loop = False
                 off += 40
-            elif a.get("status") == 404:
+            elif activity.get("status") == 404:
                 self.log_message.emit("Студия удалена! Восстановление невозможно!")
                 self.task_finished.emit()
                 return
-            elif a.get("status", 0) >= 500:
-                self.log_message.emit(f"Произошла ошибка сервера: {a.get('status')}. Повторная попытка через 30 секунд...")
+            elif activity.get("status", 0) >= 500:
+                self.log_message.emit(f"Произошла ошибка сервера: {activity.get('status')}. Повторная попытка через 30 секунд...")
                 time.sleep(30)
             else:
-                self.log_message.emit(f"Произошла неожиданная ошибка: {a.get('status')}")
+                self.log_message.emit(f"Произошла неожиданная ошибка: {activity.get('status')}")
                 self.task_finished.emit()
                 return
 
