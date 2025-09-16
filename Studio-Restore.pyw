@@ -37,7 +37,7 @@ def login(username, password):
         if not session_cookie:
             return {"success": False, "msg": "Не удалось получить cookie сессии."}
 
-        cookie_string = f'scratchsessionsid="{session_cookie.value}"; scratchcsrftoken={csrf_token}'
+        cookie_string = f'scratchsessionsid="{session_cookie}"; scratchcsrftoken={csrf_token}'
         head = {
             "Cookie": cookie_string,
             "referer": "https://scratch.mit.edu/",
