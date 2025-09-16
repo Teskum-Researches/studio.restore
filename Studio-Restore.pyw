@@ -175,14 +175,14 @@ class Worker(QObject):
         if not self.is_running:
             self.task_finished.emit()
             return
-
-        if account["isbanned"]:
-            self.log_message.emit("Аккаунт забанен!")
-            self.task_finished.emit()
-            return
             
         if not account["success"]:
             self.log_message.emit(f"Ошибка входа: {account['msg']}")
+            self.task_finished.emit()
+            return
+
+        if account["isbanned"]:
+            self.log_message.emit("Аккаунт забанен!")
             self.task_finished.emit()
             return
         
