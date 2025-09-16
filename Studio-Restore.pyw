@@ -12,13 +12,13 @@ from PyQt6.QtCore import QThread, pyqtSignal, QObject
 # Функции для взаимодействия с Scratch API
 def login(username, password):
     session = requests.Session()
+
     session.get("https://scratch.mit.edu/csrf_token/")
     csrf_token = session.cookies.get('scratchcsrftoken')
     headers = {
         "referer": "https://scratch.mit.edu",
-        "X-Requested-With": "XMLHttpRequest",
-        "X-CSRFToken": csrf_token,
-        "Content-Type": "application/json",
+        "x-requested-with": "XMLHttpRequest",
+        "x-csrftoken": csrf_token,
         "Accept-Language": "ru-RU,ru;q=0.9"
     }
     body = {
@@ -37,20 +37,15 @@ def login(username, password):
         if not session_cookie:
             return {"success": False, "msg": "Не удалось получить cookie сессии."}
 
-        cookie_string = f'scratchsessionsid="{session_cookie}"; scratchcsrftoken={csrf_token}'
         head = {
-            "Cookie": cookie_string,
-            "referer": "https://scratch.mit.edu/",
-            "X-Requested-With": "XMLHttpRequest",
-            "X-CSRFToken": csrf_token,
-            "Content-Type": "application/json",
+            "referer": "https://scratch.mit.edu",
+            "x-requested-with": "XMLHttpRequest",
+            "x-csrftoken": csrf_token,
             "Accept-Language": "ru-RU,ru;q=0.9",
             "Origin": "https://scratch.mit.edu",
-            "Accept-Encoding": "gzip, deflate, br, zstd",
-            "Accept": "*/*",
         }
         
-        resp = requests.get("https://scratch.mit.edu/session/", headers=head)
+        resp = requests.get("https://scratch.mit.edu/session", headers=head, cookies={'scratchsessionsid': session_cookie})
         if resp.status_code == 200:
             lol = resp.json()
             return {"success": True, "cookie": head, "token": lol["user"]["token"], "username": lol["user"]["username"], "isbanned": lol["user"]["banned"]}
