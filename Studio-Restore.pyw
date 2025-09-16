@@ -2,6 +2,8 @@ import requests
 import time
 import re
 import sys
+
+from datetime import datetime
 from PyQt6.QtWidgets import (QApplication, QWidget, QPushButton, QVBoxLayout, 
                             QLineEdit, QListWidget, QLabel, QProgressBar, 
                             QHBoxLayout)
@@ -81,13 +83,6 @@ def invite(studio, user, cookie):
     else:
         return {"success": False, "status": resp.status_code}
     
-def getactivity(studio, offset):
-    req = requests.get(f"https://api.scratch.mit.edu/studios/{str(studio)}/activity?limit=40&offset={str(offset)}")
-    if req.status_code == 200:
-        return {"success": True, "data": req.json()}
-    else:
-        return {"success": False, "status": req.status_code}
-    
 def openprojects(cookie, studio):
     resp = requests.put(f"https://scratch.mit.edu/site-api/galleries/{str(studio)}/mark/open/", headers=cookie)
     return resp.status_code == 200
@@ -100,12 +95,41 @@ def removeuser(studio, user, cookie):
     resp = requests.put(f"https://scratch.mit.edu/site-api/users/curators-in/{str(studio)}/remove/?usernames={user}", headers=cookie)
     return resp.status_code
 
+def getactivity(studio: int, log):
+    datelimit = datetime.now().isoformat()
+    first = True
+
+    while True:
+        res = requests.get(f'https://api.scratch.mit.edu/studios/{studio}/activity?limit=20&dateLimit={datelimit}')
+        if res.status_code == 200:
+            pass
+        elif res.status_code == 404:
+            log.emit("Студия удалена! Восстановление невозможно!")
+            return
+        elif res.status_code >= 500:
+            log.emit(f"Произошла ошибка сервера: {res.status_code}. Повторная попытка через 30 секунд...")
+            time.sleep(30)
+        else:
+            log.emit(f"Произошла неожиданная ошибка: {res.status_code}")
+            return
+
+        data = res.json()
+        if not first:
+            data = data[1:]
+        if len(data) == 0: 
+            return
+        for item in data:
+            yield item
+    
+        first = False
+        datelimit = data[-1]['datetime_created']
+
 class Worker(QObject):
     log_message = pyqtSignal(str)
     progress_updated = pyqtSignal(int)
     task_finished = pyqtSignal()
 
-    def __init__(self, username, password, studio_id, destroyer_name):
+    def __init__(self, username: str, password: str, studio_id: int, destroyer_name: str):
         super().__init__()
         self.username = username
         self.password = password
@@ -115,123 +139,109 @@ class Worker(QObject):
 
     def run(self):
         self.log_message.emit("Собираем информацию о действиях уничтожителя...")
-        loop = True
         all_acts = []
-        off = 0
         c = 0
-        while loop and self.is_running:
-            activity = getactivity(self.studio_id, off)
+        acts = getactivity(self.studio_id, self.log_message)
+
+        while True:
             if not self.is_running: 
                 break
-            if activity["success"]:
-                hasd = False
-                for act in activity["data"]:
-                    if act["actor_username"].lower() == self.destroyer_name.lower():
-                        hasd = True
-                if hasd:
-                    all_acts += activity["data"]
-                    c = 0
-                else:
-                    c += 1
-                    if c >= 3:
-                        loop = False
-                off += 40
-            elif activity.get("status") == 404:
-                self.log_message.emit("Студия удалена! Восстановление невозможно!")
-                self.task_finished.emit()
-                return
-            elif activity.get("status", 0) >= 500:
-                self.log_message.emit(f"Произошла ошибка сервера: {activity.get('status')}. Повторная попытка через 30 секунд...")
-                time.sleep(30)
+
+            try:
+                act = next(acts)
+            except StopIteration:
+                break
+
+            if act["actor_username"].lower() == self.destroyer_name.lower():
+                all_acts.append(act)
             else:
-                self.log_message.emit(f"Произошла неожиданная ошибка: {activity.get('status')}")
-                self.task_finished.emit()
-                return
+                c += 1
+                if c >= 3 * 40:
+                    break
 
         if not self.is_running:
             self.task_finished.emit()
             return
 
-        total_acts = len(all_acts)
-        if total_acts == 0:
+        if len(all_acts) == 0:
             self.log_message.emit("Не найдено действий уничтожителя. Восстановление не требуется.")
             self.task_finished.emit()
             return
 
-        percent_per_act = 100 / total_acts
+        percent_per_act = 100 / len(all_acts)
         current_progress = 0
         self.log_message.emit("Входим в аккаунт...")
         account = login(self.username, self.password)
         if not self.is_running:
             self.task_finished.emit()
             return
+
+        if account["isbanned"]:
+            self.log_message.emit("Аккаунт забанен!")
+            self.task_finished.emit()
+            return
             
-        if account["success"]:
-            if account["isbanned"]:
-                self.log_message.emit("Аккаунт забанен!")
-                self.task_finished.emit()
-                return
-        else:
+        if not account["success"]:
             self.log_message.emit(f"Ошибка входа: {account['msg']}")
             self.task_finished.emit()
             return
         
         self.log_message.emit("Начинаем восстановление!")
         
-        for i, act in enumerate(all_acts):
+        for act in all_acts:
             if not self.is_running: 
                 break
-            if act["actor_username"].lower() == self.destroyer_name.lower():
-                if act["type"] == "updatestudio":
-                    if openprojects(account["cookie"], self.studio_id):
-                        self.log_message.emit('Включено "Любой может добавлять проекты"')
+
+            if act["type"] == "updatestudio":
+                if openprojects(account["cookie"], self.studio_id):
+                    self.log_message.emit('Включено "Любой может добавлять проекты"')
+                else:
+                    self.log_message.emit('Не удалось включить "любой может добавлять проекты"')
+            elif act["type"] == "removeprojectstudio":
+                l = True
+                while l:
+                    l = False
+                    p = addproject(account["token"], self.studio_id, act["project_id"])
+                    if p == 200:
+                        self.log_message.emit(f'Добавлен проект "{act["project_title"]}"')
+                    elif p == 429:
+                        self.log_message.emit("Аккаунт получил временное ограничение на добавление проектов. Повторная попытка через 1 минуту...")
+                        l = True
+                        time.sleep(60)
+                    elif p == 403:
+                        self.log_message.emit(f'Проект "{act["project_title"]}" не в общем доступе')
                     else:
-                        self.log_message.emit('Не удалось включить "любой может добавлять проекты"')
-                elif act["type"] == "removeprojectstudio":
-                    l = True
-                    while l:
-                        l = False
-                        p = addproject(account["token"], self.studio_id, act["project_id"])
-                        if p == 200:
-                            self.log_message.emit(f'Добавлен проект "{act["project_title"]}"')
-                        elif p == 429:
-                            self.log_message.emit("Аккаунт получил временное ограничение на добавление проектов. Повторная попытка через 1 минуту...")
-                            l = True
-                            time.sleep(60)
-                        elif p == 403:
-                            self.log_message.emit(f'Проект "{act["project_title"]}" не в общем доступе')
-                        else:
-                            self.log_message.emit(f'Произошла ошибка {p} при добавлении проекта "{act["project_title"]}"')
-                elif act["type"] == "addprojecttostudio":
-                    l = True
-                    while l:
-                        l = False
-                        p = removeproject(account["token"], self.studio_id, act["project_id"])
-                        if p == 200 or p == 204:
-                            self.log_message.emit(f'Удалён проект "{act["project_title"]}"')
-                        elif p == 429:
-                            self.log_message.emit("Слишком много запросов. Следующая попытка будет через 1 минуту...")
-                            l = True
-                            time.sleep(60)
-                        elif p == 403:
-                            self.log_message.emit(f'Проект "{act["project_title"]}" не в общем доступе')
-                        else:
-                            self.log_message.emit(f'Произошла ошибка {p} при удалении проекта "{act["project_title"]}"')
-                elif act["type"] == "removecuratorstudio":
-                    if act["username"].lower() == self.destroyer_name.lower():
-                        self.log_message.emit(f"{self.destroyer_name} не приглашаем, он уничтожил студию")
+                        self.log_message.emit(f'Произошла ошибка {p} при добавлении проекта "{act["project_title"]}"')
+            elif act["type"] == "addprojecttostudio":
+                l = True
+                while l:
+                    l = False
+                    p = removeproject(account["token"], self.studio_id, act["project_id"])
+                    if p == 200 or p == 204:
+                        self.log_message.emit(f'Удалён проект "{act["project_title"]}"')
+                    elif p == 429:
+                        self.log_message.emit("Слишком много запросов. Следующая попытка будет через 1 минуту...")
+                        l = True
+                        time.sleep(60)
+                    elif p == 403:
+                        self.log_message.emit(f'Проект "{act["project_title"]}" не в общем доступе')
                     else:
-                        iii = invite(self.studio_id, act["username"], account["cookie"])
-                        if iii["success"]:
-                            self.log_message.emit(iii["data"])
-                        else:
-                            self.log_message.emit(f"Ошибка {iii.get('status')} при приглашении {act['username']}")
-                elif act["type"] == "becomeownerstudio":
-                    rem = removeuser(self.studio_id, act["recipient_username"], account["cookie"])
-                    if rem == 200:
-                        self.log_message.emit(f'Успешно удалён возможный твинк "{act["recipient_username"]}"')
+                        self.log_message.emit(f'Произошла ошибка {p} при удалении проекта "{act["project_title"]}"')
+            elif act["type"] == "removecuratorstudio":
+                if act["username"].lower() == self.destroyer_name.lower():
+                    self.log_message.emit(f"{self.destroyer_name} не приглашаем, он уничтожил студию")
+                else:
+                    iii = invite(self.studio_id, act["username"], account["cookie"])
+                    if iii["success"]:
+                        self.log_message.emit(iii["data"])
                     else:
-                        self.log_message.emit(f"Произошла ошибка {rem} при удалении возможного твинка с именем {act['recipient_username']}")
+                        self.log_message.emit(f"Ошибка {iii.get('status')} при приглашении {act['username']}")
+            elif act["type"] == "becomeownerstudio":
+                rem = removeuser(self.studio_id, act["recipient_username"], account["cookie"])
+                if rem == 200:
+                    self.log_message.emit(f'Успешно удалён возможный твинк "{act["recipient_username"]}"')
+                else:
+                    self.log_message.emit(f"Произошла ошибка {rem} при удалении возможного твинка с именем {act['recipient_username']}")
             
             current_progress += percent_per_act
             self.progress_updated.emit(int(current_progress))
