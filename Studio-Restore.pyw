@@ -9,7 +9,6 @@ from PyQt6.QtWidgets import (QApplication, QWidget, QPushButton, QVBoxLayout,
                             QHBoxLayout)
 from PyQt6.QtCore import QThread, pyqtSignal, QObject
 
-# Функции для взаимодействия с Scratch API
 def login(username, password):
     session = requests.Session()
 
@@ -288,9 +287,16 @@ class MainWindow(QWidget):
         button_layout.addWidget(self.restore_btn)
         button_layout.addWidget(self.cancel_btn)
 
+        # Layout для данных акаунта
+
+        data_layout = QHBoxLayout()
+        data_layout.addWidget(self.username_input)
+        data_layout.addWidget(self.password_input)
+
         layout = QVBoxLayout()
-        layout.addWidget(self.username_input)
-        layout.addWidget(self.password_input)
+        layout.addLayout(data_layout)
+        #layout.addWidget(self.username_input)
+        #layout.addWidget(self.password_input)
         layout.addWidget(self.destroyer_input)
         layout.addWidget(self.studio_input)
         layout.addLayout(button_layout)
