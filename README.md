@@ -1,2 +1,39 @@
-# studio.restore
-Восстонавитель студий
+# studio.resstore
+
+Studio.Restore() — программа для восстановления студий в **Scratch**. 
+
+## Установка
+
+1. Создайте виртуальное окружение (рекомендуется):
+
+```bash
+python3 -m venv venv
+source venv/bin/activate
+```
+
+2. Установите зависимости:
+
+```bash
+pip install -r requirements.txt
+```
+
+3. Если хотите установить пакет через `pyproject.toml`:
+
+```bash
+pip install .
+```
+
+## Запуск
+
+```bash
+python src/Studio-Restore.pyw
+```
+
+## Зависимости
+
+- `PyQt6`
+- `requests`
+
+## Лицензия
+
+Проект распространяется под лицензией MIT (посмотрите `LICENSE` для подробной информации).

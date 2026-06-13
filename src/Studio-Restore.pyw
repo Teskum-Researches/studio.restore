@@ -270,7 +270,7 @@ class MainWindow(QWidget):
         self.studio_input.setPlaceholderText('ID или ссылка уничтоженной студии')
 
         self.logs = QListWidget()
-        self.copyright_label = QLabel("© 2025 Teskum Researches")
+        self.copyright_label = QLabel("© 2026 Teskum Researches")
 
         self.restore_btn = QPushButton('Восстановить')
         self.cancel_btn = QPushButton('Отмена')
