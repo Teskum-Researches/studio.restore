@@ -1,4 +1,4 @@
-# studio.resstore
+# studio.restore
 
 Studio.Restore() — программа для восстановления студий в **Scratch**. 
 
